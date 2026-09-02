@@ -1,0 +1,191 @@
+name: PANDA GAME - Auto Build APK
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # 1. Repository
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 2. Java
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # 3. Node.js
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+
+      # 4. Extract ZIP if ZIP exists
+      - name: Extract Game ZIP
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p game
+
+          ZIP=$(find . -maxdepth 2 -type f -iname "*.zip" | head -n 1 || true)
+
+          if [ -n "$ZIP" ]; then
+            echo "ZIP found: $ZIP"
+            unzip -o "$ZIP" -d game
+          else
+            echo "No ZIP found."
+            cp -r . game/
+          fi
+
+          echo "Game files:"
+          find game -maxdepth 3 -type f | head -100
+
+      # 5. Find actual game folder
+      - name: Find Game
+        shell: bash
+        run: |
+          set -e
+
+          PACKAGE=$(find game \
+            -type f \
+            -name "package.json" \
+            ! -path "*/node_modules/*" \
+            | head -n 1 || true)
+
+          INDEX=$(find game \
+            -type f \
+            -name "index.html" \
+            ! -path "*/node_modules/*" \
+            | head -n 1 || true)
+
+          if [ -n "$PACKAGE" ]; then
+            DIR=$(dirname "$PACKAGE")
+            echo "Found package.json in: $DIR"
+          elif [ -n "$INDEX" ]; then
+            DIR=$(dirname "$INDEX")
+            echo "Found index.html in: $DIR"
+          else
+            echo "ERROR: Game files not found."
+            find game -maxdepth 5 -type f
+            exit 1
+          fi
+
+          echo "GAME_DIR=$DIR" >> "$GITHUB_ENV"
+
+      # 6. Install and build web game
+      - name: Build Web Game
+        shell: bash
+        run: |
+          set -e
+
+          cd "$GAME_DIR"
+
+          if [ -f "package.json" ]; then
+
+            echo "package.json found."
+
+            if [ -f "package-lock.json" ]; then
+              npm ci
+            else
+              npm install
+            fi
+
+            npm run build || true
+
+          else
+            echo "No package.json."
+            echo "Using HTML game directly."
+          fi
+
+      # 7. Prepare web files
+      - name: Prepare Web Files
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p web
+
+          if [ -d "$GAME_DIR/dist" ]; then
+            echo "Using dist/"
+            cp -r "$GAME_DIR/dist/." web/
+
+          elif [ -d "$GAME_DIR/build" ]; then
+            echo "Using build/"
+            cp -r "$GAME_DIR/build/." web/
+
+          elif [ -f "$GAME_DIR/index.html" ]; then
+            echo "Using source folder."
+            cp -r "$GAME_DIR/." web/
+
+          else
+            echo "ERROR: index.html not found."
+            find "$GAME_DIR" -maxdepth 4 -type f
+            exit 1
+          fi
+
+          echo "Web files:"
+          find web -maxdepth 3 -type f | head -100
+
+      # 8. Create Android wrapper
+      - name: Create Capacitor Android App
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p capacitor-app
+          cd capacitor-app
+
+          npm init -y
+
+          npm install @capacitor/core @capacitor/cli @capacitor/android
+
+          npx cap init "PANDA GAME" "com.pandagame.app" --web-dir ../web
+
+          npx cap add android
+
+          npx cap sync android
+
+      # 9. Build APK
+      - name: Build APK
+        shell: bash
+        run: |
+          set -e
+
+          cd capacitor-app/android
+
+          chmod +x gradlew
+
+          ./gradlew assembleDebug --stacktrace
+
+      # 10. Find APK
+      - name: Find APK
+        shell: bash
+        run: |
+          echo "APK:"
+          find capacitor-app/android \
+            -type f \
+            -name "*.apk" \
+            -print
+
+      # 11. Upload APK
+      - name: Upload PANDA GAME APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: PANDA-GAME-APK
+          path: |
+            capacitor-app/android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error

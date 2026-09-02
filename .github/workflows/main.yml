@@ -1,5 +1,243 @@
 name: PANDA GAME - Auto Build APK
+name: PANDA GAME - Auto APK
 
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build PANDA GAME APK
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # 1. Get GitHub files
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 2. Java
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # 3. Node.js
+      # IMPORTANT: No npm cache
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # 4. Install unzip
+      - name: Install unzip
+        run: sudo apt-get update && sudo apt-get install -y unzip
+
+      # 5. Extract ZIP
+      - name: Extract Game ZIP
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p game
+
+          ZIP_FILE=$(find . \
+            -maxdepth 3 \
+            -type f \
+            -iname "*.zip" \
+            ! -path "./.git/*" \
+            | head -n 1)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "No ZIP file found."
+            exit 1
+          fi
+
+          echo "ZIP found:"
+          echo "$ZIP_FILE"
+
+          unzip -o "$ZIP_FILE" -d game
+
+          echo "ZIP extracted."
+
+      # 6. Find package.json or index.html
+      - name: Find Game Files
+        shell: bash
+        run: |
+          set -e
+
+          PACKAGE=$(find game \
+            -type f \
+            -name "package.json" \
+            ! -path "*/node_modules/*" \
+            | head -n 1 || true)
+
+          INDEX=$(find game \
+            -type f \
+            -name "index.html" \
+            ! -path "*/node_modules/*" \
+            | head -n 1 || true)
+
+          if [ -n "$PACKAGE" ]; then
+            GAME_DIR=$(dirname "$PACKAGE")
+            echo "Found package.json:"
+            echo "$GAME_DIR"
+
+          elif [ -n "$INDEX" ]; then
+            GAME_DIR=$(dirname "$INDEX")
+            echo "Found index.html:"
+            echo "$GAME_DIR"
+
+          else
+            echo "ERROR: No game files found."
+            find game -maxdepth 5 -type f
+            exit 1
+          fi
+
+          echo "GAME_DIR=$GAME_DIR" >> "$GITHUB_ENV"
+
+      # 7. Install web dependencies
+      - name: Install Game Dependencies
+        shell: bash
+        run: |
+          set -e
+
+          cd "$GAME_DIR"
+
+          if [ -f package.json ]; then
+
+            echo "Installing npm packages..."
+
+            if [ -f package-lock.json ]; then
+              npm ci
+            else
+              npm install
+            fi
+
+          else
+            echo "No package.json."
+            echo "HTML game detected."
+
+          fi
+
+      # 8. Build web game if needed
+      - name: Build Web Game
+        shell: bash
+        run: |
+          set -e
+
+          cd "$GAME_DIR"
+
+          if [ -f package.json ]; then
+
+            echo "Checking build script..."
+
+            if npm run | grep -q " build"; then
+              npm run build
+            else
+              echo "No build script."
+            fi
+
+          fi
+
+      # 9. Prepare web folder
+      - name: Prepare Web App
+        shell: bash
+        run: |
+          set -e
+
+          rm -rf web
+          mkdir -p web
+
+          if [ -d "$GAME_DIR/dist" ]; then
+
+            echo "Using dist folder."
+            cp -r "$GAME_DIR/dist/." web/
+
+          elif [ -d "$GAME_DIR/build" ]; then
+
+            echo "Using build folder."
+            cp -r "$GAME_DIR/build/." web/
+
+          elif [ -f "$GAME_DIR/index.html" ]; then
+
+            echo "Using game source folder."
+            cp -r "$GAME_DIR/." web/
+
+          else
+
+            echo "ERROR: index.html not found."
+            find "$GAME_DIR" -maxdepth 5 -type f
+            exit 1
+
+          fi
+
+          echo "Web files ready:"
+          find web -maxdepth 3 -type f | head -100
+
+      # 10. Create Android project
+      - name: Create Android App
+        shell: bash
+        run: |
+          set -e
+
+          rm -rf capacitor-app
+          mkdir capacitor-app
+
+          cd capacitor-app
+
+          npm init -y
+
+          npm install \
+            @capacitor/core \
+            @capacitor/cli \
+            @capacitor/android
+
+          npx cap init \
+            "PANDA GAME" \
+            "com.pandagame.app" \
+            --web-dir ../web
+
+          npx cap add android
+
+          npx cap sync android
+
+      # 11. Build APK
+      - name: Build APK
+        shell: bash
+        run: |
+          set -e
+
+          cd capacitor-app/android
+
+          chmod +x gradlew
+
+          ./gradlew assembleDebug --stacktrace
+
+      # 12. Show APK
+      - name: Find APK
+        run: |
+          echo "===================="
+          echo "PANDA GAME APK"
+          echo "===================="
+
+          find capacitor-app/android \
+            -type f \
+            -name "*.apk" \
+            -print
+
+      # 13. Upload APK
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: PANDA-GAME-APK
+          path: |
+            capacitor-app/android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
 on:
   push:
     branches:
